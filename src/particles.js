@@ -34,10 +34,10 @@ export class ParticleSystem {
   }
 
   // Ambient drift in the side gutters.
-  ambient(width, height, boardX, boardW, beatPhase) {
+  ambient(width, height, boardX, boardW, beatPhase, quality = 1) {
     this.boardCenterX = boardX + boardW / 2;
     const intensity = 0.6 + 0.4 * Math.sin(beatPhase * Math.PI * 2);
-    const count = Math.random() < 0.45 * intensity ? 1 : 0;
+    const count = Math.random() < 0.45 * intensity * quality ? 1 : 0;
     for (let i = 0; i < count; i++) {
       const onLeft = Math.random() < 0.5;
       const x = onLeft
@@ -52,7 +52,7 @@ export class ParticleSystem {
 
   // Called on every kick beat — give all alive particles a velocity impulse
   // pushing them outward from the board center + upward, and spike bounceScale.
-  kickBounce(width, height, boardX, boardW) {
+  kickBounce(width, height, boardX, boardW, quality = 1) {
     this.bounceScale = 1;
     const cx = boardX + boardW / 2;
 
@@ -66,7 +66,7 @@ export class ParticleSystem {
     }
 
     // Spawn extra "jump" particles in both gutters
-    const n = 8;
+    const n = Math.max(2, Math.round(8 * quality));
     for (let i = 0; i < n; i++) {
       const onLeft = i < n / 2;
       const x = onLeft
@@ -88,6 +88,7 @@ export class ParticleSystem {
   }
 
   update(dt) {
+    const frameScale = Math.min(2.5, dt * 60);
     // Decay bounce scale
     this.bounceScale *= Math.max(0, 1 - dt * 5);
     if (this.bounceScale < 0.01) this.bounceScale = 0;
@@ -96,10 +97,11 @@ export class ParticleSystem {
       if (!p.alive) continue;
       p.life += dt;
       if (p.life >= p.maxLife) { p.alive = false; continue; }
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vx *= 0.97;  // slightly more drag so impulse decays visibly
-      p.vy *= 0.97;
+      p.x += p.vx * frameScale;
+      p.y += p.vy * frameScale;
+      const drag = Math.pow(0.97, frameScale);
+      p.vx *= drag;  // slightly more drag so impulse decays visibly
+      p.vy *= drag;
     }
   }
 

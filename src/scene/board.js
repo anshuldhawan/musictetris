@@ -89,9 +89,13 @@ export function makeBoardScene(scene) {
   }));
 
   let layoutCache = null;
+  let geometryDirty = true;
+  let lastContentKey = '';
+  let lastPalette = null;
 
   function setLayout(layout) {
     layoutCache = layout;
+    geometryDirty = true;
     const { x, y, boardW, boardH, cell } = layout;
     const cx = x + boardW / 2;
     const cy = y + boardH / 2;
@@ -164,15 +168,31 @@ export function makeBoardScene(scene) {
     haloMat.opacity = 0.08 + 0.18 * totalGlow;
     frameMat.opacity = 0.42 + 0.12 * Math.min(1, effects.glow);
 
+    const clearKey = clearingRows && clearingRows.length
+      ? `${clearingRows.join(',')}:${clearProgress.toFixed(3)}`
+      : '';
+    const contentKey = `${state.boardVersion || 0}:${state.pieceVersion || 0}:${clearKey}`;
+    if (!geometryDirty && lastContentKey === contentKey && lastPalette === palette) return;
+    geometryDirty = false;
+    lastContentKey = contentKey;
+    lastPalette = palette;
+
     const { x, y, cell } = layout;
     const halfCell = cell / 2;
-    const clearSet = clearingRows && clearingRows.length ? new Set(clearingRows) : null;
 
     let idx = 0;
 
     // 1. Grid cells (200)
     for (let r = 0; r < ROWS; r++) {
-      const isClearRow = clearSet && clearSet.has(r);
+      let isClearRow = false;
+      if (clearingRows && clearingRows.length) {
+        for (let i = 0; i < clearingRows.length; i++) {
+          if (clearingRows[i] === r) {
+            isClearRow = true;
+            break;
+          }
+        }
+      }
       for (let c = 0; c < COLS; c++) {
         const v = grid[r][c];
         if (v === -1) {

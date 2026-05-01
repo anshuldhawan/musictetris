@@ -20,7 +20,11 @@ let renderer, scene, camera, composer, colorGradePass, vhsPass;
 let bg, board, shapes, clusters, particlesScene, portalsScene;
 let viewport = { W: 0, H: 0 };
 let cameraDistance = 1000;
+let currentPixelRatio = 0;
+let currentW = 0;
+let currentH = 0;
 const CAMERA_FOV = 45;
+const DEFAULT_QUALITY = { pixelRatioScale: 1, postFx: 1 };
 
 export function initRenderer(canvas) {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
@@ -54,25 +58,34 @@ export function initRenderer(canvas) {
   composer.addPass(vhsPass);
   composer.addPass(new OutputPass());
 
-  resizeRenderer(window.innerWidth, window.innerHeight);
+  resizeRenderer(window.innerWidth, window.innerHeight, DEFAULT_QUALITY);
 }
 
-export function resizeRenderer(W, H) {
+export function resizeRenderer(W, H, qualitySettings = DEFAULT_QUALITY) {
   viewport.W = W;
   viewport.H = H;
-  const dpr = renderPixelRatio(W);
+  const dpr = renderPixelRatio(W, qualitySettings);
+  const sizeChanged = W !== currentW || H !== currentH;
+  const pixelRatioChanged = Math.abs(dpr - currentPixelRatio) > 0.001;
+  if (!sizeChanged && !pixelRatioChanged) return;
+
+  currentW = W;
+  currentH = H;
+  currentPixelRatio = dpr;
   renderer.setPixelRatio(dpr);
   renderer.setSize(W, H, false);
   composer.setPixelRatio(dpr);
   composer.setSize(W, H);
 
-  camera.aspect = W / Math.max(1, H);
-  camera.fov = CAMERA_FOV;
-  cameraDistance = (H / 2) / Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2));
-  camera.position.set(W / 2, H / 2, cameraDistance);
-  camera.lookAt(W / 2, H / 2, 0);
-  camera.updateProjectionMatrix();
-  camera.projectionMatrix.elements[5] *= -1;
+  if (sizeChanged) {
+    camera.aspect = W / Math.max(1, H);
+    camera.fov = CAMERA_FOV;
+    cameraDistance = (H / 2) / Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2));
+    camera.position.set(W / 2, H / 2, cameraDistance);
+    camera.lookAt(W / 2, H / 2, 0);
+    camera.updateProjectionMatrix();
+    camera.projectionMatrix.elements[5] *= -1;
+  }
 
   if (vhsPass) {
     vhsPass.uniforms.uResolution.value.set(W * dpr, H * dpr);
@@ -87,10 +100,10 @@ export function rendererPixelRatio() {
   return renderer ? renderer.getPixelRatio() : 1;
 }
 
-function renderPixelRatio(width) {
+function renderPixelRatio(width, qualitySettings = DEFAULT_QUALITY) {
   const native = window.devicePixelRatio || 1;
   const cap = width < 700 ? 1 : 1.25;
-  return Math.min(native, cap);
+  return Math.max(0.6, Math.min(native, cap) * (qualitySettings.pixelRatioScale || 1));
 }
 
 const tmpFromColor = new THREE.Color();
@@ -99,6 +112,8 @@ const tintColor = new THREE.Color();
 
 export function renderFrame(state) {
   const { effects, palette, frenzyState } = state;
+  const qualitySettings = state.qualitySettings || DEFAULT_QUALITY;
+  const postFx = qualitySettings.postFx ?? 1;
 
   // Camera shake — apply to camera position so the entire scene shakes.
   const [sx, sy] = effects.shakeOffset();
@@ -122,9 +137,9 @@ export function renderFrame(state) {
   const u = colorGradePass.uniforms;
   u.uBeatPhase.value = state.beatPhase;
   u.uIsFrenzy.value = frenzyState === 'frenzy' ? 1 : 0;
-  u.uSaturation.value = 1.0 + (frenzyState === 'frenzy' ? 0.2 : 0.0);
+  u.uSaturation.value = 1.0 + (frenzyState === 'frenzy' ? 0.2 * postFx : 0.0);
   u.uHueShift.value = 0;
-  u.uFlash.value = effects.flash;
+  u.uFlash.value = effects.flash * postFx;
   u.uFlashColor.value.set(palette.glow);
 
   // Palette-transition tint — blend old glow → new glow as the swap eases.
@@ -135,12 +150,13 @@ export function renderFrame(state) {
     const blended = lerpColor(fromGlow, toGlow, t);
     tintColor.set(blended);
     u.uTint.value.copy(tintColor);
-    u.uTintMix.value = 0.18 * (1 - effects.paletteT);
+    u.uTintMix.value = 0.18 * (1 - effects.paletteT) * postFx;
   } else {
     u.uTint.value.setRGB(1, 1, 1);
     u.uTintMix.value = 0;
   }
 
+  vhsPass.enabled = postFx >= 0.4;
   const v = vhsPass.uniforms;
   const paletteRush = effects.paletteT < 1 ? (1 - effects.paletteT) : 0;
   const clearRush = state.clearProgress || 0;
@@ -150,10 +166,10 @@ export function renderFrame(state) {
   v.uIntensity.value = Math.min(
     0.28,
     frenzyBoost * 0.45 + effects.flash * 0.12 + paletteRush * 0.06 + clearRush * 0.08,
-  );
-  v.uChromaticAmt.value = 0.35 + frenzyBoost * 2.3 + beat * 0.12;
-  v.uScanlineAmt.value = 0.035 + frenzyBoost * 0.12;
-  v.uGrainAmt.value = 0.008 + frenzyBoost * 0.035 + effects.flash * 0.018;
+  ) * postFx;
+  v.uChromaticAmt.value = (0.35 + frenzyBoost * 2.3 + beat * 0.12) * postFx;
+  v.uScanlineAmt.value = (0.035 + frenzyBoost * 0.12) * postFx;
+  v.uGrainAmt.value = (0.008 + frenzyBoost * 0.035 + effects.flash * 0.018) * postFx;
   v.uRollSpeed.value = 0.025 + frenzyBoost * 0.09;
 
   composer.render();

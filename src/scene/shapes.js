@@ -100,8 +100,9 @@ export function makeShapesScene(scene) {
     array[idx * 3 + 2] = z;
   }
 
-  function buildShell(slot, verts, scale, depth, time, sideSign) {
-    const count = Math.min(verts.length, MAX_VERTS);
+  function buildShell(slot, verts, scale, depth, time, sideSign, quality) {
+    const desiredCount = Math.max(12, Math.floor(verts.length * quality));
+    const count = Math.min(desiredCount, verts.length, MAX_VERTS);
     if (count < 3) {
       slot.geom.setDrawRange(0, 0);
       slot.wire.geometry.setDrawRange(0, 0);
@@ -124,7 +125,7 @@ export function makeShapesScene(scene) {
       const sin = Math.sin(layerTwist);
 
       for (let i = 0; i < count; i++) {
-        const v = verts[i];
+        const v = verts[Math.floor(i * verts.length / count)];
         const angle = (i / count) * Math.PI * 2;
         const breathe = 1 + 0.08 * Math.sin(angle * 3 + time * 1.2 + layer);
         const x0 = v.x * scale * layerScale * breathe;
@@ -161,7 +162,7 @@ export function makeShapesScene(scene) {
     return count;
   }
 
-  function updateDots(slot, count, radius, depth, time) {
+  function updateDots(slot, count, radius, depth, time, quality) {
     if (count < 3) {
       slot.dots.count = 0;
       return;
@@ -170,7 +171,8 @@ export function makeShapesScene(scene) {
     const pos = slot.posAttr.array;
     const step = Math.max(1, Math.floor((count * LAYERS) / DOT_SLOTS));
     let dotCount = 0;
-    for (let i = 0; i < count * LAYERS && dotCount < DOT_SLOTS; i += step) {
+    const maxDots = Math.max(12, Math.floor(DOT_SLOTS * quality));
+    for (let i = 0; i < count * LAYERS && dotCount < maxDots; i += step) {
       const size = Math.max(2.2, radius * (0.018 + 0.018 * ((dotCount % 5) / 4)));
       const pulse = 1 + 0.18 * Math.sin(time * 2.4 + dotCount);
       tmpMatrix.makeScale(size * pulse, size * pulse, size * pulse);
@@ -182,14 +184,14 @@ export function makeShapesScene(scene) {
     slot.dots.instanceMatrix.needsUpdate = true;
   }
 
-  function updateOne(slot, shape, cx, cy, radius, color, glowColor, beatPhase, time, sideSign) {
+  function updateOne(slot, shape, cx, cy, radius, color, glowColor, beatPhase, time, sideSign, quality) {
     const verts = shape.currentVerts;
     const beatSin = Math.sin(beatPhase * Math.PI * 2);
     const beatPulse = 0.06 * beatSin;
     const scale = radius * (0.96 + beatPulse + shape.bounceScale * 0.85);
     const depth = Math.max(24, radius * 0.72);
-    const count = buildShell(slot, verts, scale, depth, time, sideSign);
-    updateDots(slot, count, radius, depth, time);
+    const count = buildShell(slot, verts, scale, depth, time, sideSign, quality);
+    updateDots(slot, count, radius, depth, time, quality);
 
     slot.group.position.set(cx, cy, depth * 0.28);
     slot.group.rotation.set(
@@ -208,7 +210,8 @@ export function makeShapesScene(scene) {
   }
 
   function update(state) {
-    const { layout, palette, beatPhase, time, viewport, shapeLeft, shapeRight } = state;
+    const { layout, palette, beatPhase, time, viewport, shapeLeft, shapeRight, qualitySettings } = state;
+    const quality = qualitySettings?.shapes ?? 1;
     const { W, H } = viewport;
     const shapeRadius = Math.min(layout.x * 0.32, H * 0.13);
     const leftCx = layout.x / 2;
@@ -218,8 +221,8 @@ export function makeShapesScene(scene) {
     if (shapeRadius > 4 && layout.x > 24) {
       left.group.visible = true;
       right.group.visible = true;
-      updateOne(left,  shapeLeft,  leftCx,  cy, shapeRadius, palette.particles, palette.glow, beatPhase, time, -1);
-      updateOne(right, shapeRight, rightCx, cy, shapeRadius, palette.particles, palette.glow, beatPhase, time, 1);
+      updateOne(left,  shapeLeft,  leftCx,  cy, shapeRadius, palette.particles, palette.glow, beatPhase, time, -1, quality);
+      updateOne(right, shapeRight, rightCx, cy, shapeRadius, palette.particles, palette.glow, beatPhase, time, 1, quality);
     } else {
       left.group.visible = false;
       right.group.visible = false;

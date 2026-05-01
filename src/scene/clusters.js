@@ -59,6 +59,7 @@ export function makeClusterScene(scene) {
     size: 1, phase: 0, colorMix: 0,
   }));
   let burstCursor = 0;
+  let lastQuality = 1;
 
   function spawnBurst(x, y, sideSign, power, count) {
     for (let i = 0; i < count; i++) {
@@ -80,7 +81,7 @@ export function makeClusterScene(scene) {
   }
 
   function emitRowClear(layout, rows, power = 1) {
-    const count = Math.min(18, 8 + rows.length * 4);
+    const count = Math.max(4, Math.round(Math.min(18, 8 + rows.length * 4) * lastQuality));
     for (const r of rows) {
       const cy = layout.y + r * layout.cell + layout.cell / 2;
       spawnBurst(layout.x - 18, cy, -1, power, count);
@@ -89,6 +90,7 @@ export function makeClusterScene(scene) {
   }
 
   function updateBursts(dt) {
+    const frameScale = Math.min(2.5, dt * 60);
     for (const p of bursts) {
       if (!p.alive) continue;
       p.life += dt;
@@ -96,22 +98,24 @@ export function makeClusterScene(scene) {
         p.alive = false;
         continue;
       }
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vx *= 0.965;
-      p.vy = p.vy * 0.965 - 0.01;
+      p.x += p.vx * frameScale;
+      p.y += p.vy * frameScale;
+      const drag = Math.pow(0.965, frameScale);
+      p.vx *= drag;
+      p.vy = p.vy * drag - 0.01 * frameScale;
     }
   }
 
   function update(state) {
-    const { layout, palette, beatPhase, time, viewport, pixelRatio, frenzyState } = state;
+    const { layout, palette, beatPhase, time, viewport, pixelRatio, frenzyState, qualitySettings } = state;
+    lastQuality = qualitySettings?.clusters ?? 1;
     const { W, H } = viewport;
     const leftW = layout.x;
     const rightW = W - layout.x - layout.boardW;
     const minGutter = Math.max(0, Math.min(leftW, rightW));
     const clusterCount = Math.max(1, Math.min(MAX_CLUSTERS_PER_SIDE, Math.floor(minGutter / 90) + 1));
-    const quality = pixelRatio > 1.5 || W < 700 ? 0.72 : 1;
-    const maxStatic = Math.floor(clusterCount * PARTICLES_PER_CLUSTER * 2 * quality);
+    const density = (pixelRatio > 1.5 || W < 700 ? 0.72 : 1) * lastQuality;
+    const maxStatic = Math.floor(clusterCount * PARTICLES_PER_CLUSTER * 2 * density);
     const beat = 0.5 + 0.5 * Math.sin(beatPhase * Math.PI * 2);
     const frenzy = frenzyState === 'frenzy' ? 1 : frenzyState === 'warning' ? 0.45 : 0;
 

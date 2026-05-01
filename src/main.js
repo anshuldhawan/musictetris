@@ -10,22 +10,38 @@ import { startAudio, pauseAudio, resumeAudio, setStackFraction, setFrenzy, getBp
          getBeatPhase, onKick, playClearSting, setMusicMuted, isMusicMuted } from './audio.js';
 import { initPortals, updatePortals, isAudioPending,
          consumeAudioPending } from './portals.js';
-import { initRenderer, resizeRenderer, renderFrame, viewportSize,
-         rendererPixelRatio, emitClusterRowClear } from './renderer.js';
+import { initRenderer, resizeRenderer, renderFrame, rendererPixelRatio,
+         emitClusterRowClear } from './renderer.js';
 import { initOverlays, updateFrenzyBanner, setPausedVisible } from './ui/overlays.js';
 import { loadGameState, saveGameState, clearGameState, loadHighScore,
          saveHighScore } from './storage.js';
+import { createPerformanceTracker } from './performance.js';
 
 // ===== Canvas / renderer setup =====
 const canvas = document.getElementById('game');
 let W = 0, H = 0;
+let layoutCache = null;
+const viewport = { W: 0, H: 0 };
+const performanceTracker = createPerformanceTracker();
+
+function updateBoardLayout() {
+  const cell = Math.max(18, Math.min(40, Math.floor(H * 0.85 / ROWS)));
+  const boardW = cell * COLS;
+  const boardH = cell * ROWS;
+  const x = Math.floor((W - boardW) / 2);
+  const y = Math.floor((H - boardH) / 2);
+  layoutCache = { cell, boardW, boardH, x, y };
+}
 
 function resize() {
   W = window.innerWidth;
   H = window.innerHeight;
+  viewport.W = W;
+  viewport.H = H;
+  updateBoardLayout();
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
-  resizeRenderer(W, H);
+  resizeRenderer(W, H, performanceTracker.settings);
 }
 window.addEventListener('resize', resize);
 
@@ -53,9 +69,42 @@ const effects = new Effects();
 const shapeLeft = new FloatingShape();
 const shapeRight = new FloatingShape();
 let highScore = loadHighScore();
+let boardVersion = 0;
+let pieceVersion = 0;
+let ghostCacheKey = '';
+let ghostCache = null;
+let saveDirty = false;
+
+const hud = {
+  score: document.getElementById('score'),
+  highScore: document.getElementById('high-score'),
+  lines: document.getElementById('lines'),
+  bpm: document.getElementById('bpm'),
+  muteBtn: document.getElementById('mute-btn'),
+  muteState: document.getElementById('mute-state'),
+  finalScore: document.getElementById('final-score'),
+  gameover: document.getElementById('gameover'),
+};
+const hudCache = {
+  score: null,
+  highScore: null,
+  lines: null,
+  bpm: null,
+};
+let lastBpmHudAt = 0;
 
 let startTime = performance.now();
 const SAVE_INTERVAL_MS = 2000;
+
+function markBoardDirty() {
+  boardVersion++;
+  ghostCacheKey = '';
+}
+
+function markPieceDirty() {
+  pieceVersion++;
+  ghostCacheKey = '';
+}
 
 function resetGame({ clearSave = false } = {}) {
   grid = emptyGrid();
@@ -73,16 +122,28 @@ function resetGame({ clearSave = false } = {}) {
   effects.startPaletteSwap(0, 0);
   effects.paletteT = 1;
   setPausedVisible(false);
+  markBoardDirty();
+  markPieceDirty();
   if (clearSave) clearGameState();
-  updateHud();
+  updateHud(true);
 }
 
-function updateHud() {
+function setHudText(key, el, value) {
+  const text = String(value);
+  if (hudCache[key] === text) return;
+  hudCache[key] = text;
+  el.textContent = text;
+}
+
+function updateHud(force = false, now = performance.now()) {
   updateHighScore();
-  document.getElementById('score').textContent = String(score);
-  document.getElementById('high-score').textContent = String(highScore);
-  document.getElementById('lines').textContent = String(linesCleared);
-  document.getElementById('bpm').textContent = String(getBpm());
+  setHudText('score', hud.score, score);
+  setHudText('highScore', hud.highScore, highScore);
+  setHudText('lines', hud.lines, linesCleared);
+  if (force || hudCache.bpm === null || now - lastBpmHudAt >= 250) {
+    lastBpmHudAt = now;
+    setHudText('bpm', hud.bpm, getBpm());
+  }
 }
 
 function numberOr(value, fallback) {
@@ -159,15 +220,21 @@ function updateHighScore() {
   }
 }
 
+function markSaveDirty() {
+  saveDirty = true;
+}
+
 function persistNow() {
   if (!grid) return;
   updateHighScore();
   if (gameOver) {
     clearGameState();
+    saveDirty = false;
     return;
   }
   saveGameState(serializeGameState());
   lastSaveAt = performance.now();
+  saveDirty = false;
 }
 
 function restoreSavedGame() {
@@ -217,7 +284,9 @@ function restoreSavedGame() {
   effects.startPaletteSwap(paletteIdx, paletteIdx);
   effects.paletteT = 1;
   setPausedVisible(paused);
-  updateHud();
+  markBoardDirty();
+  markPieceDirty();
+  updateHud(true);
   return true;
 }
 
@@ -254,12 +323,14 @@ function tryMove(dRow, dCol, persist = true) {
   if (collides(grid, piece, dRow, dCol)) return false;
   piece.row += dRow;
   piece.col += dCol;
-  if (persist) persistNow();
+  markPieceDirty();
+  if (persist) markSaveDirty();
   return true;
 }
 
 function lockAndAdvance() {
   lockPiece(grid, piece);
+  markBoardDirty();
   const cleared = findFullRows(grid);
   const n = cleared.length;
   if (n > 0) {
@@ -281,6 +352,7 @@ function lockAndAdvance() {
     clearingRows = cleared;
     clearingT = CLEAR_HOLD_SEC;
     piece = null;
+    markPieceDirty();
     dropAccumulator = 0;
     softDropStartedAt = 0;
     persistNow();
@@ -288,6 +360,7 @@ function lockAndAdvance() {
   }
   setStackFraction(stackHeightFraction(grid));
   piece = spawnPiece();
+  markPieceDirty();
   softDropStartedAt = 0;
   if (collides(grid, piece, 0, 0)) {
     gameOver = true;
@@ -299,10 +372,12 @@ function lockAndAdvance() {
 
 function finishClearing() {
   removeRows(grid, clearingRows);
+  markBoardDirty();
   clearingRows = [];
   clearingT = 0;
   setStackFraction(stackHeightFraction(grid));
   piece = spawnPiece();
+  markPieceDirty();
   softDropStartedAt = 0;
   if (collides(grid, piece, 0, 0)) {
     gameOver = true;
@@ -317,15 +392,25 @@ const pendingClearBursts = [];
 function hardDrop() {
   while (tryMove(1, 0, false)) {}
   lockAndAdvance();
-  persistNow();
 }
 
 // ===== Input =====
 const keyHandlers = {
   ArrowLeft:  () => { if (!paused && !gameOver && piece) tryMove(0, -1); },
   ArrowRight: () => { if (!paused && !gameOver && piece) tryMove(0, 1); },
-  ArrowUp:    () => { if (!paused && !gameOver && piece && tryRotate(grid, piece, 1)) persistNow(); },
-  ArrowDown:  () => { if (!softDropKeyHeld) { softDropKeyHeld = true; softDropStartedAt = performance.now(); persistNow(); } },
+  ArrowUp:    () => {
+    if (!paused && !gameOver && piece && tryRotate(grid, piece, 1)) {
+      markPieceDirty();
+      markSaveDirty();
+    }
+  },
+  ArrowDown:  () => {
+    if (!softDropKeyHeld) {
+      softDropKeyHeld = true;
+      softDropStartedAt = performance.now();
+      markSaveDirty();
+    }
+  },
   ' ':        () => { if (!paused && !gameOver && piece) hardDrop(); },
   p:          () => togglePause(),
   P:          () => togglePause(),
@@ -339,7 +424,11 @@ window.addEventListener('keydown', (e) => {
   if (h) { h(); e.preventDefault(); }
 });
 window.addEventListener('keyup', (e) => {
-  if (e.key === 'ArrowDown') { softDropKeyHeld = false; softDropStartedAt = 0; persistNow(); }
+  if (e.key === 'ArrowDown') {
+    softDropKeyHeld = false;
+    softDropStartedAt = 0;
+    markSaveDirty();
+  }
 });
 
 function togglePause() {
@@ -353,14 +442,13 @@ function togglePause() {
 function toggleMute() {
   const next = !isMusicMuted();
   setMusicMuted(next);
-  const btn = document.getElementById('mute-btn');
-  const label = document.getElementById('mute-state');
-  if (btn) btn.setAttribute('aria-pressed', next ? 'true' : 'false');
-  if (label) label.textContent = next ? 'OFF' : 'ON';
+  if (hud.muteBtn) hud.muteBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+  if (hud.muteState) hud.muteState.textContent = next ? 'OFF' : 'ON';
 }
 
 // ===== Layout / palette =====
 function getActivePalette() {
+  if (effects.paletteT >= 1) return PALETTES[paletteIdx];
   const t = easeInOut(effects.paletteT);
   const a = PALETTES[effects.paletteFromIdx];
   const b = PALETTES[effects.paletteToIdx];
@@ -368,18 +456,18 @@ function getActivePalette() {
 }
 
 function boardLayout() {
-  const cell = Math.max(18, Math.min(40, Math.floor(H * 0.85 / ROWS)));
-  const boardW = cell * COLS;
-  const boardH = cell * ROWS;
-  const x = Math.floor((W - boardW) / 2);
-  const y = Math.floor((H - boardH) / 2);
-  return { cell, boardW, boardH, x, y };
+  return layoutCache;
 }
 
 function ghostPiece() {
+  if (!piece) return null;
+  const key = `${boardVersion}:${pieceVersion}`;
+  if (ghostCacheKey === key) return ghostCache;
   const g = { ...piece };
   while (!collides(grid, g, 1, 0)) g.row += 1;
-  return g;
+  ghostCache = g;
+  ghostCacheKey = key;
+  return ghostCache;
 }
 
 // ===== Main loop =====
@@ -387,6 +475,8 @@ function frame(now) {
   if (!lastTime) lastTime = now;
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
+  const qualitySettings = performanceTracker.update(dt);
+  resizeRenderer(W, H, qualitySettings);
 
   if (!paused && !gameOver) {
     if (frenzyState === 'idle' && score >= FRENZY_GATE_SCORE) {
@@ -432,7 +522,7 @@ function frame(now) {
         }
         moved = true;
       }
-      if (moved && !locked) persistNow();
+      if (moved && !locked) markSaveDirty();
     }
   }
 
@@ -446,14 +536,15 @@ function frame(now) {
   const layout = boardLayout();
   const beatPhase = getBeatPhase();
 
-  particles.ambient(W, H, layout.x, layout.boardW, beatPhase);
+  particles.ambient(W, H, layout.x, layout.boardW, beatPhase, qualitySettings.particles);
 
   while (pendingClearBursts.length) {
     const b = pendingClearBursts.shift();
     for (const r of b.rows) {
       const cy = layout.y + r * layout.cell + layout.cell / 2;
-      particles.burst(layout.x - 6, cy, b.count / 2, b.power);
-      particles.burst(layout.x + layout.boardW + 6, cy, b.count / 2, b.power);
+      const count = Math.max(4, b.count * qualitySettings.particles * 0.5);
+      particles.burst(layout.x - 6, cy, count, b.power);
+      particles.burst(layout.x + layout.boardW + 6, cy, count, b.power);
     }
   }
 
@@ -478,15 +569,19 @@ function frame(now) {
     particleSystem: particles,
     shapeLeft,
     shapeRight,
-    viewport: { W, H },
+    viewport,
     dt,
     pixelRatio: rendererPixelRatio(),
+    quality: performanceTracker.quality,
+    qualitySettings,
+    boardVersion,
+    pieceVersion,
   });
 
   updateFrenzyBanner({ frenzyState, frenzyTimer, frenzyGapSec: FRENZY_GAP_SEC, layout });
 
-  updateHud();
-  if (now - lastSaveAt >= SAVE_INTERVAL_MS) persistNow();
+  updateHud(false, now);
+  if (saveDirty && now - lastSaveAt >= SAVE_INTERVAL_MS) persistNow();
   requestAnimationFrame(frame);
 }
 
@@ -494,14 +589,14 @@ function frame(now) {
 function showGameOver() {
   updateHighScore();
   clearGameState();
-  document.getElementById('final-score').textContent = String(score);
-  document.getElementById('gameover').classList.remove('hidden');
+  hud.finalScore.textContent = String(score);
+  hud.gameover.classList.remove('hidden');
 }
 
 function bootGame() {
   onKick(() => {
     const layout = boardLayout();
-    particles.kickBounce(W, H, layout.x, layout.boardW);
+    particles.kickBounce(W, H, layout.x, layout.boardW, performanceTracker.settings.particles);
     shapeLeft.kick();
     shapeRight.kick();
   });
@@ -519,7 +614,7 @@ window.addEventListener('pointerdown', () => {
 });
 
 document.getElementById('restart-btn').addEventListener('click', () => {
-  document.getElementById('gameover').classList.add('hidden');
+  hud.gameover.classList.add('hidden');
   resetGame({ clearSave: true });
   persistNow();
 });
