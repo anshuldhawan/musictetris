@@ -8,7 +8,7 @@ import { PALETTES, lerpPalette, lerpColor, withAlpha } from './palette.js';
 import { startAudio, pauseAudio, resumeAudio, setStackFraction, setFrenzy, getBpm,
          getBeatPhase, onKick, playClearSting } from './audio.js';
 import { initPortals, updatePortals, drawPortals, isAudioPending,
-         consumeAudioPending, arrivedFromPortal } from './portals.js';
+         consumeAudioPending } from './portals.js';
 
 // ===== Canvas setup =====
 const canvas = document.getElementById('game');
@@ -34,7 +34,7 @@ let lastTime = 0, dropAccumulator = 0;
 let softDropStartedAt = 0;
 let softDropKeyHeld = false;
 let frenzyTimer = 0;
-let frenzyActive = false;
+let frenzyState = 'idle'; // 'idle' | 'normal' | 'warning' | 'frenzy'
 let paletteIdx = 0;
 let clearingRows = [];
 let clearingT = 0;
@@ -57,7 +57,7 @@ function resetGame() {
   clearingRows = [];
   clearingT = 0;
   frenzyTimer = 0;
-  frenzyActive = false;
+  frenzyState = 'idle';
   setFrenzy(false);
   effects.startPaletteSwap(0, 0);
   effects.paletteT = 1;
@@ -75,9 +75,12 @@ const SOFT_DROP_MIN_FACTOR = 6;       // matches current soft-drop speed
 const SOFT_DROP_MAX_FACTOR = 240;     // effectively instant at typical BPM
 const SOFT_DROP_RAMP_MS = 600;        // time to reach max acceleration
 
-const FRENZY_CYCLE_SEC = 20;
+const FRENZY_GATE_SCORE = 25;
+const FRENZY_GAP_SEC = 25;             // normal gap between frenzies
 const FRENZY_DURATION_SEC = 5;
-const FRENZY_DROP_MULT = 3;
+const FRENZY_WARNING_SEC = 3;          // last N seconds of the gap show a warning
+const FRENZY_CYCLE_SEC = FRENZY_GAP_SEC + FRENZY_DURATION_SEC; // 30
+const FRENZY_DROP_MULT = 2;
 
 function currentDropInterval() {
   const beatSec = 60 / Math.max(60, getBpm());
@@ -92,7 +95,7 @@ function currentDropInterval() {
       + (SOFT_DROP_MAX_FACTOR - SOFT_DROP_MIN_FACTOR) * eased;
     interval = beatSec / factor;
   }
-  if (frenzyActive) interval /= FRENZY_DROP_MULT;
+  if (frenzyState === 'frenzy') interval /= FRENZY_DROP_MULT;
   return interval;
 }
 
@@ -357,13 +360,32 @@ function frame(now) {
   lastTime = now;
 
   if (!paused && !gameOver) {
-    frenzyTimer += dt;
-    if (frenzyTimer >= FRENZY_CYCLE_SEC) frenzyTimer -= FRENZY_CYCLE_SEC;
-    const shouldBeFrenzy =
-      frenzyTimer >= (FRENZY_CYCLE_SEC - FRENZY_DURATION_SEC);
-    if (shouldBeFrenzy !== frenzyActive) {
-      frenzyActive = shouldBeFrenzy;
-      setFrenzy(frenzyActive);
+    // Frenzy stays disarmed until the player crosses the score gate.
+    if (frenzyState === 'idle' && score >= FRENZY_GATE_SCORE) {
+      frenzyState = 'normal';
+      frenzyTimer = 0;
+    }
+    if (frenzyState !== 'idle') {
+      frenzyTimer += dt;
+      if (frenzyTimer >= FRENZY_CYCLE_SEC) frenzyTimer -= FRENZY_CYCLE_SEC;
+      let nextState;
+      if (frenzyTimer >= FRENZY_GAP_SEC) nextState = 'frenzy';
+      else if (frenzyTimer >= FRENZY_GAP_SEC - FRENZY_WARNING_SEC) nextState = 'warning';
+      else nextState = 'normal';
+      if (nextState !== frenzyState) {
+        const wasFrenzy = frenzyState === 'frenzy';
+        const isFrenzy = nextState === 'frenzy';
+        frenzyState = nextState;
+        if (isFrenzy && !wasFrenzy) {
+          setFrenzy(true);
+          // Punchy entry cue: bright flash, sustained glow, brief shake.
+          effects.flash = Math.max(effects.flash, 0.5);
+          effects.glow = Math.max(effects.glow, 0.9);
+          effects.shake = Math.max(effects.shake, 8);
+        } else if (!isFrenzy && wasFrenzy) {
+          setFrenzy(false);
+        }
+      }
     }
 
     if (isClearing()) {
@@ -439,10 +461,44 @@ function frame(now) {
     ctx.fillRect(0, 0, W, H);
   }
 
+  drawFrenzyBanner(layout);
+
   if (paused) drawCenterText('PAUSED');
 
   updateHud();
   requestAnimationFrame(frame);
+}
+
+function drawFrenzyBanner(layout) {
+  if (frenzyState !== 'warning' && frenzyState !== 'frenzy') return;
+  const { x, y, boardW } = layout;
+  const cx = x + boardW / 2;
+  const by = Math.max(36, y - 28);
+  let text, color, period;
+  if (frenzyState === 'warning') {
+    const remaining = FRENZY_GAP_SEC - frenzyTimer;
+    const n = Math.max(1, Math.ceil(remaining));
+    text = `FRENZY IN ${n}`;
+    color = '#ffcc33';
+    period = 220;
+  } else {
+    text = 'FRENZY!';
+    color = '#ff3366';
+    period = 90;
+  }
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / period * Math.PI);
+  const scale = 1 + 0.08 * pulse;
+  ctx.save();
+  ctx.translate(cx, by);
+  ctx.scale(scale, scale);
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 20 + 30 * pulse;
+  ctx.fillStyle = color;
+  ctx.font = 'bold 30px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
 }
 
 function drawCenterText(text) {
@@ -475,22 +531,19 @@ function bootGame() {
   requestAnimationFrame(frame);
 }
 
-document.getElementById('start-btn').addEventListener('click', async () => {
-  document.getElementById('overlay').style.display = 'none';
-  try {
-    await startAudio();
-  } catch (err) {
-    console.error('Audio failed to start', err);
+// Pointer fallback so a click anywhere also unlocks audio. The keydown handler
+// above already covers keyboard players; this catches mouse/touch users who
+// click before pressing a key.
+window.addEventListener('pointerdown', () => {
+  if (isAudioPending()) {
+    consumeAudioPending();
+    startAudio().catch(err => console.error('Audio failed to start', err));
   }
-  bootGame();
 });
-
-if (arrivedFromPortal()) {
-  document.getElementById('overlay').style.display = 'none';
-  bootGame();
-}
 
 document.getElementById('restart-btn').addEventListener('click', () => {
   document.getElementById('gameover').classList.add('hidden');
   resetGame();
 });
+
+bootGame();

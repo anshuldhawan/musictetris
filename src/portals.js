@@ -19,7 +19,9 @@ const arrivedViaPortal = incoming.get('portal') === 'true';
 const refRaw = incoming.get('ref');
 const hasStartPortal = arrivedViaPortal && !!refRaw;
 
-let audioPending = arrivedViaPortal;
+// Audio always waits for the first user gesture (browser AudioContext rule),
+// regardless of whether the player arrived via a portal or a normal page load.
+let audioPending = true;
 let mouseX = -1;
 let mouseY = -1;
 const preloaded = new Set();
