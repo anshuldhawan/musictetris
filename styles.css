@@ -1,0 +1,127 @@
+:root {
+  --bg-a: #0a0612;
+  --bg-b: #150b1f;
+  --fg: #f4f0ff;
+  --accent: #b388ff;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, var(--bg-b) 0%, var(--bg-a) 70%);
+  color: var(--fg);
+  font-family: 'Courier New', ui-monospace, monospace;
+  letter-spacing: 0.05em;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#game {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+#hud {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 5;
+  text-align: right;
+  font-size: 14px;
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+.hud-row {
+  margin-bottom: 6px;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  align-items: baseline;
+}
+
+.hud-label {
+  opacity: 0.55;
+  font-size: 11px;
+}
+
+#score, #lines, #bpm {
+  font-size: 22px;
+  font-weight: bold;
+  min-width: 4ch;
+  display: inline-block;
+  text-align: right;
+}
+
+.hud-help {
+  margin-top: 18px;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0.45;
+  font-size: 11px;
+  text-align: right;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 4, 16, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.overlay.hidden { display: none; }
+
+.overlay-card {
+  text-align: center;
+  padding: 40px 56px;
+  border: 1px solid rgba(179, 136, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(20, 10, 35, 0.85);
+  box-shadow: 0 0 60px rgba(179, 136, 255, 0.25);
+  max-width: 460px;
+}
+
+.overlay-card h1 {
+  font-size: 32px;
+  margin-bottom: 14px;
+  letter-spacing: 0.2em;
+  text-shadow: 0 0 20px var(--accent);
+}
+
+.overlay-card p {
+  margin-bottom: 24px;
+  opacity: 0.75;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.overlay-card button {
+  font-family: inherit;
+  font-size: 14px;
+  letter-spacing: 0.15em;
+  padding: 12px 32px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.overlay-card button:hover {
+  background: var(--accent);
+  color: var(--bg-a);
+  box-shadow: 0 0 24px var(--accent);
+}

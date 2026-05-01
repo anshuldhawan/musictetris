@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Music Tetris</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/tone@14.8.49/build/Tone.js"></script>
+  <script async src="https://vibejam.cc/2026/widget.js"></script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div class="hud-row"><span class="hud-label">SCORE</span><span id="score">0</span></div>
+    <div class="hud-row"><span class="hud-label">LINES</span><span id="lines">0</span></div>
+    <div class="hud-row"><span class="hud-label">BPM</span><span id="bpm">100</span></div>
+    <div class="hud-row hud-help">
+      <div>&larr; &rarr; move</div>
+      <div>&uarr; rotate</div>
+      <div>&darr; soft drop</div>
+      <div>space hard drop</div>
+      <div>P pause</div>
+    </div>
+  </div>
+
+  <div id="overlay" class="overlay">
+    <div class="overlay-card">
+      <h1>MUSIC TETRIS</h1>
+      <p>A Tetris variant that breathes with the beat. Stack rises &rarr; tempo rises. Clear lines for color shifts.</p>
+      <button id="start-btn">Click to Start</button>
+    </div>
+  </div>
+
+  <div id="gameover" class="overlay hidden">
+    <div class="overlay-card">
+      <h1>GAME OVER</h1>
+      <p>Final score: <span id="final-score">0</span></p>
+      <button id="restart-btn">Play Again</button>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
