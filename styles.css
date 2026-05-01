@@ -69,6 +69,36 @@ html, body {
   text-align: right;
 }
 
+.hud-toggle {
+  pointer-events: auto;
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
+#mute-btn {
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+#mute-btn:hover {
+  background: var(--accent);
+  color: var(--bg-a);
+  box-shadow: 0 0 16px var(--accent);
+}
+
+#mute-btn[aria-pressed="true"] {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
 .overlay {
   position: fixed;
   inset: 0;
@@ -124,4 +154,65 @@ html, body {
   background: var(--accent);
   color: var(--bg-a);
   box-shadow: 0 0 24px var(--accent);
+}
+
+#frenzy-banner {
+  position: fixed;
+  z-index: 8;
+  font: bold 30px monospace;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+  white-space: nowrap;
+  text-align: center;
+}
+
+#paused-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font: bold 36px monospace;
+  letter-spacing: 0.2em;
+  pointer-events: none;
+}
+
+@media (max-width: 620px) {
+  #hud {
+    top: 8px;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 12px;
+    width: calc(100vw - 20px);
+    text-align: center;
+    font-size: 10px;
+    letter-spacing: 0;
+  }
+
+  .hud-row {
+    margin-bottom: 0;
+    gap: 4px;
+  }
+
+  .hud-label {
+    font-size: 9px;
+  }
+
+  #score, #lines, #bpm {
+    min-width: 0;
+    font-size: 15px;
+  }
+
+  .hud-help,
+  .hud-toggle {
+    display: none;
+  }
 }

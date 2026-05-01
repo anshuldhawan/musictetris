@@ -10,6 +10,8 @@ const ARP_NOTES = ['A3', 'C4', 'E4', 'G4', 'A4', 'G4', 'E4', 'C4'];
 
 let kick, snare, hat, bass, arp, sting;
 let kickSeq, snareSeq, hatSeq, bassSeq, arpSeq;
+let musicBus = null;
+let musicMuted = false;
 let beatPhase = 0;
 let lastBeatTime = 0;
 let onKickCb = null;
@@ -27,19 +29,23 @@ export async function startAudio() {
 
   Tone.Transport.bpm.value = BASE_BPM;
 
+  // Music bus — all looped beds route through this so they can be muted as a group.
+  // The line-clear sting is SFX and bypasses the bus.
+  musicBus = new Tone.Gain(musicMuted ? 0 : 1).toDestination();
+
   // Drums
   kick = new Tone.MembraneSynth({
     pitchDecay: 0.04,
     octaves: 6,
     oscillator: { type: 'sine' },
     envelope: { attack: 0.001, decay: 0.35, sustain: 0.01, release: 0.4 },
-  }).toDestination();
+  }).connect(musicBus);
   kick.volume.value = -4;
 
   snare = new Tone.NoiseSynth({
     noise: { type: 'white' },
     envelope: { attack: 0.001, decay: 0.18, sustain: 0 },
-  }).toDestination();
+  }).connect(musicBus);
   snare.volume.value = -12;
 
   hat = new Tone.MetalSynth({
@@ -49,17 +55,17 @@ export async function startAudio() {
     modulationIndex: 32,
     resonance: 4000,
     octaves: 1.2,
-  }).toDestination();
+  }).connect(musicBus);
   hat.volume.value = -28;
 
   bass = new Tone.MonoSynth({
     oscillator: { type: 'square' },
     envelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.4 },
     filterEnvelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.5, baseFrequency: 200, octaves: 2.6 },
-  }).toDestination();
+  }).connect(musicBus);
   bass.volume.value = -10;
 
-  arp = new Tone.PluckSynth({ attackNoise: 1, dampening: 4000, resonance: 0.85 }).toDestination();
+  arp = new Tone.PluckSynth({ attackNoise: 1, dampening: 4000, resonance: 0.85 }).connect(musicBus);
   arp.volume.value = -16;
 
   sting = new Tone.PolySynth(Tone.Synth, {
@@ -143,6 +149,15 @@ export function setFrenzy(active) {
 
 export function getBpm() {
   return Math.round(Tone.Transport.bpm.value);
+}
+
+export function setMusicMuted(muted) {
+  musicMuted = !!muted;
+  if (musicBus) musicBus.gain.rampTo(musicMuted ? 0 : 1, 0.05);
+}
+
+export function isMusicMuted() {
+  return musicMuted;
 }
 
 // 0..1 sawtooth across one beat — read by renderer for ambient pulse.

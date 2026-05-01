@@ -7,20 +7,31 @@
   <link rel="stylesheet" href="styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/tone@14.8.49/build/Tone.js"></script>
   <script async src="https://vibejam.cc/2026/widget.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <canvas id="game"></canvas>
 
   <div id="hud">
     <div class="hud-row"><span class="hud-label">SCORE</span><span id="score">0</span></div>
+    <div class="hud-row"><span class="hud-label">HIGH</span><span id="high-score">0</span></div>
     <div class="hud-row"><span class="hud-label">LINES</span><span id="lines">0</span></div>
     <div class="hud-row"><span class="hud-label">BPM</span><span id="bpm">100</span></div>
+    <div class="hud-row hud-toggle"><button id="mute-btn" type="button" aria-pressed="false">MUSIC <span id="mute-state">ON</span></button></div>
     <div class="hud-row hud-help">
       <div>&larr; &rarr; move</div>
       <div>&uarr; rotate</div>
       <div>&darr; soft drop</div>
       <div>space hard drop</div>
       <div>P pause</div>
+      <div>M mute</div>
     </div>
   </div>
 

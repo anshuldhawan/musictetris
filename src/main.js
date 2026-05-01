@@ -1,40 +1,47 @@
 import { COLS, ROWS, emptyGrid, collides, lockPiece, findFullRows, removeRows, scoreForClear,
          spawnPiece, tryRotate, stackHeightFraction } from './board.js';
-import { pieceCells } from './pieces.js';
+import { PIECES } from './pieces.js';
 import { ParticleSystem } from './particles.js';
 import { FloatingShape } from './shapes.js';
-import { Effects, easeInOut } from './effects.js';
-import { PALETTES, lerpPalette, lerpColor, withAlpha } from './palette.js';
+import { Effects } from './effects.js';
+import { PALETTES, lerpPalette } from './palette.js';
+import { easeInOut } from './effects.js';
 import { startAudio, pauseAudio, resumeAudio, setStackFraction, setFrenzy, getBpm,
-         getBeatPhase, onKick, playClearSting } from './audio.js';
-import { initPortals, updatePortals, drawPortals, isAudioPending,
+         getBeatPhase, onKick, playClearSting, setMusicMuted, isMusicMuted } from './audio.js';
+import { initPortals, updatePortals, isAudioPending,
          consumeAudioPending } from './portals.js';
+import { initRenderer, resizeRenderer, renderFrame, viewportSize,
+         rendererPixelRatio, emitClusterRowClear } from './renderer.js';
+import { initOverlays, updateFrenzyBanner, setPausedVisible } from './ui/overlays.js';
+import { loadGameState, saveGameState, clearGameState, loadHighScore,
+         saveHighScore } from './storage.js';
 
-// ===== Canvas setup =====
+// ===== Canvas / renderer setup =====
 const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
 let W = 0, H = 0;
 
 function resize() {
   W = window.innerWidth;
   H = window.innerHeight;
-  canvas.width = W * window.devicePixelRatio;
-  canvas.height = H * window.devicePixelRatio;
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
-  ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+  resizeRenderer(W, H);
 }
 window.addEventListener('resize', resize);
+
+initRenderer(canvas);
 resize();
-initPortals(canvas);
+initPortals(canvas, persistNow);
+initOverlays();
 
 // ===== Game state =====
 let grid, piece, score, linesCleared, paused, gameOver;
 let lastTime = 0, dropAccumulator = 0;
+let lastSaveAt = 0;
 let softDropStartedAt = 0;
 let softDropKeyHeld = false;
 let frenzyTimer = 0;
-let frenzyState = 'idle'; // 'idle' | 'normal' | 'warning' | 'frenzy'
+let frenzyState = 'idle';
 let paletteIdx = 0;
 let clearingRows = [];
 let clearingT = 0;
@@ -45,8 +52,12 @@ const particles = new ParticleSystem();
 const effects = new Effects();
 const shapeLeft = new FloatingShape();
 const shapeRight = new FloatingShape();
+let highScore = loadHighScore();
 
-function resetGame() {
+let startTime = performance.now();
+const SAVE_INTERVAL_MS = 2000;
+
+function resetGame({ clearSave = false } = {}) {
   grid = emptyGrid();
   piece = spawnPiece();
   score = 0;
@@ -61,25 +72,165 @@ function resetGame() {
   setFrenzy(false);
   effects.startPaletteSwap(0, 0);
   effects.paletteT = 1;
+  setPausedVisible(false);
+  if (clearSave) clearGameState();
   updateHud();
 }
 
 function updateHud() {
+  updateHighScore();
   document.getElementById('score').textContent = String(score);
+  document.getElementById('high-score').textContent = String(highScore);
   document.getElementById('lines').textContent = String(linesCleared);
   document.getElementById('bpm').textContent = String(getBpm());
 }
 
+function numberOr(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function integerOr(value, fallback) {
+  return Number.isInteger(value) ? value : fallback;
+}
+
+function cloneGrid(source) {
+  return source.map(row => row.slice());
+}
+
+function validGrid(source) {
+  if (!Array.isArray(source) || source.length !== ROWS) return null;
+  const next = [];
+  for (const row of source) {
+    if (!Array.isArray(row) || row.length !== COLS) return null;
+    next.push(row.map(cell => {
+      const value = Number(cell);
+      return Number.isInteger(value) && value >= -1 ? value : -1;
+    }));
+  }
+  return next;
+}
+
+function serializePiece(activePiece) {
+  if (!activePiece) return null;
+  return {
+    id: activePiece.id,
+    rotation: activePiece.rotation,
+    row: activePiece.row,
+    col: activePiece.col,
+  };
+}
+
+function hydratePiece(savedPiece) {
+  if (!savedPiece || typeof savedPiece.id !== 'string') return null;
+  const def = PIECES.find(candidate => candidate.id === savedPiece.id);
+  if (!def) return null;
+  const rotation = integerOr(savedPiece.rotation, 0);
+  return {
+    id: def.id,
+    colorIndex: def.colorIndex,
+    rotations: def.rotations,
+    rotation: ((rotation % def.rotations.length) + def.rotations.length) % def.rotations.length,
+    row: integerOr(savedPiece.row, 0),
+    col: integerOr(savedPiece.col, Math.floor(COLS / 2)),
+  };
+}
+
+function serializeGameState() {
+  return {
+    grid: cloneGrid(grid),
+    piece: serializePiece(piece),
+    score,
+    linesCleared,
+    paused,
+    gameOver,
+    paletteIdx,
+    frenzyState,
+    frenzyTimer,
+    clearingRows: clearingRows.slice(),
+    clearingT,
+    dropAccumulator,
+  };
+}
+
+function updateHighScore() {
+  if (Number.isFinite(score) && score > highScore) {
+    highScore = score;
+    saveHighScore(highScore);
+  }
+}
+
+function persistNow() {
+  if (!grid) return;
+  updateHighScore();
+  if (gameOver) {
+    clearGameState();
+    return;
+  }
+  saveGameState(serializeGameState());
+  lastSaveAt = performance.now();
+}
+
+function restoreSavedGame() {
+  const saved = loadGameState();
+  if (!saved) return false;
+  if (saved.gameOver) {
+    clearGameState();
+    return false;
+  }
+
+  const savedGrid = validGrid(saved.grid);
+  if (!savedGrid) {
+    clearGameState();
+    return false;
+  }
+
+  const savedClearingRows = Array.isArray(saved.clearingRows)
+    ? saved.clearingRows.filter(row => Number.isInteger(row) && row >= 0 && row < ROWS)
+    : [];
+  const savedPiece = hydratePiece(saved.piece);
+  if (!savedPiece && savedClearingRows.length === 0) {
+    clearGameState();
+    return false;
+  }
+
+  grid = savedGrid;
+  piece = savedPiece;
+  score = Math.max(0, integerOr(saved.score, 0));
+  linesCleared = Math.max(0, integerOr(saved.linesCleared, 0));
+  paused = !!saved.paused;
+  gameOver = false;
+  paletteIdx = Math.max(0, integerOr(saved.paletteIdx, 0)) % PALETTES.length;
+  clearingRows = savedClearingRows;
+  clearingT = savedClearingRows.length
+    ? Math.max(0.01, numberOr(saved.clearingT, CLEAR_HOLD_SEC))
+    : 0;
+  dropAccumulator = Math.max(0, numberOr(saved.dropAccumulator, 0));
+  softDropStartedAt = 0;
+  softDropKeyHeld = false;
+  frenzyTimer = Math.max(0, numberOr(saved.frenzyTimer, 0)) % FRENZY_CYCLE_SEC;
+  frenzyState = ['idle', 'normal', 'warning', 'frenzy'].includes(saved.frenzyState)
+    ? saved.frenzyState
+    : (score >= FRENZY_GATE_SCORE ? 'normal' : 'idle');
+
+  setFrenzy(frenzyState === 'frenzy');
+  setStackFraction(stackHeightFraction(grid));
+  effects.startPaletteSwap(paletteIdx, paletteIdx);
+  effects.paletteT = 1;
+  setPausedVisible(paused);
+  updateHud();
+  return true;
+}
+
 // ===== Drop / locking =====
-const SOFT_DROP_MIN_FACTOR = 6;       // matches current soft-drop speed
-const SOFT_DROP_MAX_FACTOR = 240;     // effectively instant at typical BPM
-const SOFT_DROP_RAMP_MS = 600;        // time to reach max acceleration
+const SOFT_DROP_MIN_FACTOR = 6;
+const SOFT_DROP_MAX_FACTOR = 240;
+const SOFT_DROP_RAMP_MS = 600;
 
 const FRENZY_GATE_SCORE = 25;
-const FRENZY_GAP_SEC = 25;             // normal gap between frenzies
+const FRENZY_GAP_SEC = 25;
 const FRENZY_DURATION_SEC = 5;
-const FRENZY_WARNING_SEC = 3;          // last N seconds of the gap show a warning
-const FRENZY_CYCLE_SEC = FRENZY_GAP_SEC + FRENZY_DURATION_SEC; // 30
+const FRENZY_WARNING_SEC = 3;
+const FRENZY_CYCLE_SEC = FRENZY_GAP_SEC + FRENZY_DURATION_SEC;
 const FRENZY_DROP_MULT = 2;
 
 function currentDropInterval() {
@@ -99,10 +250,11 @@ function currentDropInterval() {
   return interval;
 }
 
-function tryMove(dRow, dCol) {
+function tryMove(dRow, dCol, persist = true) {
   if (collides(grid, piece, dRow, dCol)) return false;
   piece.row += dRow;
   piece.col += dCol;
+  if (persist) persistNow();
   return true;
 }
 
@@ -117,9 +269,8 @@ function lockAndAdvance() {
     linesCleared += n;
     effects.triggerClear(n);
     playClearSting(n);
-    // particle burst from cleared row centers (board-relative coords resolved later in draw)
     pendingClearBursts.push({ rows: cleared, count: 25 + n * 20, power: 2 + n * 1.5 });
-    // palette progression
+    emitClusterRowClear(boardLayout(), cleared, 1.2 + n * 0.35);
     const newIdx = Math.floor(score / 20) % PALETTES.length;
     const oldIdx = Math.floor(prev / 20) % PALETTES.length;
     if (newIdx !== oldIdx) {
@@ -127,12 +278,12 @@ function lockAndAdvance() {
       paletteIdx = newIdx;
     }
     updateHud();
-    // Enter clearing phase: rows stay visible while animating out.
     clearingRows = cleared;
     clearingT = CLEAR_HOLD_SEC;
     piece = null;
     dropAccumulator = 0;
     softDropStartedAt = 0;
+    persistNow();
     return;
   }
   setStackFraction(stackHeightFraction(grid));
@@ -143,6 +294,7 @@ function lockAndAdvance() {
     showGameOver();
   }
   updateHud();
+  persistNow();
 }
 
 function finishClearing() {
@@ -157,24 +309,28 @@ function finishClearing() {
     showGameOver();
   }
   updateHud();
+  persistNow();
 }
 
 const pendingClearBursts = [];
 
 function hardDrop() {
-  while (tryMove(1, 0)) {}
+  while (tryMove(1, 0, false)) {}
   lockAndAdvance();
+  persistNow();
 }
 
 // ===== Input =====
 const keyHandlers = {
   ArrowLeft:  () => { if (!paused && !gameOver && piece) tryMove(0, -1); },
   ArrowRight: () => { if (!paused && !gameOver && piece) tryMove(0, 1); },
-  ArrowUp:    () => { if (!paused && !gameOver && piece) tryRotate(grid, piece, 1); },
-  ArrowDown:  () => { if (!softDropKeyHeld) { softDropKeyHeld = true; softDropStartedAt = performance.now(); } },
+  ArrowUp:    () => { if (!paused && !gameOver && piece && tryRotate(grid, piece, 1)) persistNow(); },
+  ArrowDown:  () => { if (!softDropKeyHeld) { softDropKeyHeld = true; softDropStartedAt = performance.now(); persistNow(); } },
   ' ':        () => { if (!paused && !gameOver && piece) hardDrop(); },
   p:          () => togglePause(),
   P:          () => togglePause(),
+  m:          () => toggleMute(),
+  M:          () => toggleMute(),
 };
 
 window.addEventListener('keydown', (e) => {
@@ -183,16 +339,27 @@ window.addEventListener('keydown', (e) => {
   if (h) { h(); e.preventDefault(); }
 });
 window.addEventListener('keyup', (e) => {
-  if (e.key === 'ArrowDown') { softDropKeyHeld = false; softDropStartedAt = 0; }
+  if (e.key === 'ArrowDown') { softDropKeyHeld = false; softDropStartedAt = 0; persistNow(); }
 });
 
 function togglePause() {
   if (gameOver) return;
   paused = !paused;
   if (paused) pauseAudio(); else resumeAudio();
+  setPausedVisible(paused);
+  persistNow();
 }
 
-// ===== Rendering =====
+function toggleMute() {
+  const next = !isMusicMuted();
+  setMusicMuted(next);
+  const btn = document.getElementById('mute-btn');
+  const label = document.getElementById('mute-state');
+  if (btn) btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+  if (label) label.textContent = next ? 'OFF' : 'ON';
+}
+
+// ===== Layout / palette =====
 function getActivePalette() {
   const t = easeInOut(effects.paletteT);
   const a = PALETTES[effects.paletteFromIdx];
@@ -201,150 +368,12 @@ function getActivePalette() {
 }
 
 function boardLayout() {
-  // Cell size from height, leave margin.
   const cell = Math.max(18, Math.min(40, Math.floor(H * 0.85 / ROWS)));
   const boardW = cell * COLS;
   const boardH = cell * ROWS;
   const x = Math.floor((W - boardW) / 2);
   const y = Math.floor((H - boardH) / 2);
   return { cell, boardW, boardH, x, y };
-}
-
-function drawBackground(palette, beatPhase) {
-  const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(beatPhase * Math.PI * 2));
-  const cx = W / 2, cy = H / 2;
-  const grad = ctx.createRadialGradient(cx, cy, 50, cx, cy, Math.hypot(W, H) / 1.5);
-  grad.addColorStop(0, palette.bgB);
-  grad.addColorStop(1, palette.bgA);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, W, H);
-
-  // subtle vignette tint synced to beat
-  ctx.fillStyle = withAlpha(palette.glow, 0.04 * pulse);
-  ctx.fillRect(0, 0, W, H);
-}
-
-function drawBlock(x, y, size, color, scale = 1, glow = 0) {
-  const inset = (size * (1 - scale)) / 2;
-  const s = size * scale;
-  const r = Math.max(2, s * 0.12);
-  ctx.save();
-  if (glow > 0) {
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 16 * glow;
-  }
-  ctx.fillStyle = color;
-  roundRect(ctx, x + inset + 1, y + inset + 1, s - 2, s - 2, r);
-  ctx.fill();
-  // inner highlight
-  ctx.fillStyle = withAlpha('#ffffff', 0.18);
-  roundRect(ctx, x + inset + 2, y + inset + 2, s - 4, (s - 4) * 0.45, r);
-  ctx.fill();
-  ctx.restore();
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-function drawBoardFrame(layout, palette, beatPhase) {
-  const { x, y, boardW, boardH } = layout;
-  const ambientGlow = 0.35 + 0.25 * (0.5 + 0.5 * Math.sin(beatPhase * Math.PI * 2));
-  const totalGlow = Math.min(1, ambientGlow + effects.glow);
-
-  // Outer glow
-  ctx.save();
-  ctx.shadowColor = palette.glow;
-  ctx.shadowBlur = 30 + 60 * totalGlow;
-  ctx.strokeStyle = withAlpha(palette.glow, 0.7);
-  ctx.lineWidth = 2;
-  roundRect(ctx, x - 4, y - 4, boardW + 8, boardH + 8, 8);
-  ctx.stroke();
-  ctx.restore();
-
-  // Inner board fill
-  ctx.fillStyle = withAlpha('#000000', 0.55);
-  roundRect(ctx, x, y, boardW, boardH, 4);
-  ctx.fill();
-
-  // Faint grid lines
-  ctx.strokeStyle = withAlpha(palette.glow, 0.06);
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let c = 1; c < COLS; c++) {
-    const cx = x + c * layout.cell;
-    ctx.moveTo(cx, y);
-    ctx.lineTo(cx, y + boardH);
-  }
-  for (let r = 1; r < ROWS; r++) {
-    const cy = y + r * layout.cell;
-    ctx.moveTo(x, cy);
-    ctx.lineTo(x + boardW, cy);
-  }
-  ctx.stroke();
-}
-
-function drawGrid(layout, palette, beatPhase) {
-  const { x, y, cell } = layout;
-  const breath = 1 + 0.04 * Math.sin(beatPhase * Math.PI * 2) + effects.blockPulse;
-  const clearSet = clearingRows.length ? new Set(clearingRows) : null;
-  const clearProgress = clearSet ? 1 - Math.max(0, clearingT) / CLEAR_HOLD_SEC : 0;
-  for (let r = 0; r < ROWS; r++) {
-    const isClearRow = clearSet && clearSet.has(r);
-    for (let c = 0; c < COLS; c++) {
-      const v = grid[r][c];
-      if (v === -1) continue;
-      const baseColor = palette.blocks[v % palette.blocks.length];
-      if (isClearRow) {
-        // Brighten toward palette.glow early, then fade alpha + shrink scale.
-        const t = clearProgress;
-        const color = lerpColor(baseColor, palette.glow, Math.min(1, t * 1.5));
-        const alpha = 1 - t;
-        const scale = breath * (1 - 0.4 * t);
-        const glowBoost = 0.4 + 0.8 * (1 - t);
-        ctx.save();
-        ctx.globalAlpha = Math.max(0, alpha);
-        drawBlock(x + c * cell, y + r * cell, cell, color, scale, glowBoost);
-        ctx.restore();
-      } else {
-        drawBlock(x + c * cell, y + r * cell, cell, baseColor, breath, 0.4);
-      }
-    }
-  }
-}
-
-function drawPiece(layout, palette, beatPhase, p, alpha = 1, ghost = false) {
-  const { x, y, cell } = layout;
-  const breath = 1 + 0.05 * Math.sin(beatPhase * Math.PI * 2) + effects.blockPulse;
-  const color = palette.blocks[p.colorIndex % palette.blocks.length];
-  for (const [dr, dc] of pieceCells(p)) {
-    const rr = p.row + dr;
-    const cc = p.col + dc;
-    if (rr < 0) continue;
-    if (ghost) {
-      ctx.save();
-      ctx.globalAlpha = 0.18;
-      ctx.fillStyle = color;
-      roundRect(ctx, x + cc * cell + 3, y + rr * cell + 3, cell - 6, cell - 6, 3);
-      ctx.fill();
-      ctx.restore();
-    } else {
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      drawBlock(x + cc * cell, y + rr * cell, cell, color, breath, 0.6);
-      ctx.restore();
-    }
-  }
 }
 
 function ghostPiece() {
@@ -360,7 +389,6 @@ function frame(now) {
   lastTime = now;
 
   if (!paused && !gameOver) {
-    // Frenzy stays disarmed until the player crosses the score gate.
     if (frenzyState === 'idle' && score >= FRENZY_GATE_SCORE) {
       frenzyState = 'normal';
       frenzyTimer = 0;
@@ -378,7 +406,6 @@ function frame(now) {
         frenzyState = nextState;
         if (isFrenzy && !wasFrenzy) {
           setFrenzy(true);
-          // Punchy entry cue: bright flash, sustained glow, brief shake.
           effects.flash = Math.max(effects.flash, 0.5);
           effects.glow = Math.max(effects.glow, 0.9);
           effects.shake = Math.max(effects.shake, 8);
@@ -394,13 +421,18 @@ function frame(now) {
     } else {
       dropAccumulator += dt;
       const interval = currentDropInterval();
+      let moved = false;
+      let locked = false;
       while (dropAccumulator >= interval) {
         dropAccumulator -= interval;
-        if (!tryMove(1, 0)) {
+        if (!tryMove(1, 0, false)) {
           lockAndAdvance();
+          locked = true;
           break;
         }
+        moved = true;
       }
+      if (moved && !locked) persistNow();
     }
   }
 
@@ -414,10 +446,8 @@ function frame(now) {
   const layout = boardLayout();
   const beatPhase = getBeatPhase();
 
-  // Ambient particle drift in gutters
   particles.ambient(W, H, layout.x, layout.boardW, beatPhase);
 
-  // Resolve any pending burst spawns now that we know the layout.
   while (pendingClearBursts.length) {
     const b = pendingClearBursts.shift();
     for (const r of b.rows) {
@@ -427,94 +457,43 @@ function frame(now) {
     }
   }
 
-  // ===== Render =====
-  ctx.clearRect(0, 0, W, H);
-  drawBackground(palette, beatPhase);
+  const clearProgress = clearingRows.length
+    ? 1 - Math.max(0, clearingT) / CLEAR_HOLD_SEC
+    : 0;
 
-  const [sx, sy] = effects.shakeOffset();
-  ctx.save();
-  ctx.translate(sx, sy);
+  const time = (now - startTime) / 1000;
 
-  // Floating shapes in the gutters
-  const shapeRadius = Math.min(layout.x * 0.35, H * 0.12);
-  const leftCx = layout.x / 2;
-  const rightCx = layout.x + layout.boardW + (W - layout.x - layout.boardW) / 2;
-  const shapeCy = H / 2;
-  shapeLeft.draw(ctx, leftCx, shapeCy, shapeRadius, palette.particles, palette.glow, beatPhase);
-  shapeRight.draw(ctx, rightCx, shapeCy, shapeRadius, palette.particles, palette.glow, beatPhase);
+  renderFrame({
+    grid,
+    piece,
+    ghost: !gameOver && piece ? ghostPiece() : null,
+    palette,
+    layout,
+    beatPhase,
+    time,
+    effects,
+    frenzyState,
+    clearingRows,
+    clearProgress,
+    particleSystem: particles,
+    shapeLeft,
+    shapeRight,
+    viewport: { W, H },
+    dt,
+    pixelRatio: rendererPixelRatio(),
+  });
 
-  particles.draw(ctx, palette.particles, beatPhase);
-  drawPortals(ctx, layout, palette, beatPhase, W, H);
-
-  drawBoardFrame(layout, palette, beatPhase);
-  drawGrid(layout, palette, beatPhase);
-  if (!gameOver && piece) {
-    drawPiece(layout, palette, beatPhase, ghostPiece(), 1, true);
-    drawPiece(layout, palette, beatPhase, piece, 1, false);
-  }
-
-  ctx.restore();
-
-  // Fullscreen flash overlay (above shake so flash is full-rect)
-  if (effects.flash > 0.01) {
-    ctx.fillStyle = withAlpha(palette.glow, effects.flash);
-    ctx.fillRect(0, 0, W, H);
-  }
-
-  drawFrenzyBanner(layout);
-
-  if (paused) drawCenterText('PAUSED');
+  updateFrenzyBanner({ frenzyState, frenzyTimer, frenzyGapSec: FRENZY_GAP_SEC, layout });
 
   updateHud();
+  if (now - lastSaveAt >= SAVE_INTERVAL_MS) persistNow();
   requestAnimationFrame(frame);
-}
-
-function drawFrenzyBanner(layout) {
-  if (frenzyState !== 'warning' && frenzyState !== 'frenzy') return;
-  const { x, y, boardW } = layout;
-  const cx = x + boardW / 2;
-  const by = Math.max(36, y - 28);
-  let text, color, period;
-  if (frenzyState === 'warning') {
-    const remaining = FRENZY_GAP_SEC - frenzyTimer;
-    const n = Math.max(1, Math.ceil(remaining));
-    text = `FRENZY IN ${n}`;
-    color = '#ffcc33';
-    period = 220;
-  } else {
-    text = 'FRENZY!';
-    color = '#ff3366';
-    period = 90;
-  }
-  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / period * Math.PI);
-  const scale = 1 + 0.08 * pulse;
-  ctx.save();
-  ctx.translate(cx, by);
-  ctx.scale(scale, scale);
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 20 + 30 * pulse;
-  ctx.fillStyle = color;
-  ctx.font = 'bold 30px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 0, 0);
-  ctx.restore();
-}
-
-function drawCenterText(text) {
-  ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 36px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, W / 2, H / 2);
-  ctx.restore();
 }
 
 // ===== Boot =====
 function showGameOver() {
+  updateHighScore();
+  clearGameState();
   document.getElementById('final-score').textContent = String(score);
   document.getElementById('gameover').classList.remove('hidden');
 }
@@ -526,14 +505,12 @@ function bootGame() {
     shapeLeft.kick();
     shapeRight.kick();
   });
-  resetGame();
+  if (!restoreSavedGame()) resetGame();
   lastTime = 0;
+  startTime = performance.now();
   requestAnimationFrame(frame);
 }
 
-// Pointer fallback so a click anywhere also unlocks audio. The keydown handler
-// above already covers keyboard players; this catches mouse/touch users who
-// click before pressing a key.
 window.addEventListener('pointerdown', () => {
   if (isAudioPending()) {
     consumeAudioPending();
@@ -543,7 +520,13 @@ window.addEventListener('pointerdown', () => {
 
 document.getElementById('restart-btn').addEventListener('click', () => {
   document.getElementById('gameover').classList.add('hidden');
-  resetGame();
+  resetGame({ clearSave: true });
+  persistNow();
 });
+
+document.getElementById('mute-btn').addEventListener('click', toggleMute);
+
+window.addEventListener('pagehide', persistNow);
+window.addEventListener('beforeunload', persistNow);
 
 bootGame();

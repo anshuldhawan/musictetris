@@ -4,7 +4,7 @@
 export const PALETTES = [
   {
     name: 'aurora',
-    blocks: ['#7afcff', '#ffd66b', '#b388ff', '#7cffb2', '#ff6b9d', '#6ba9ff', '#ffae5a', '#e6e6ff', '#a6f0ff', '#ffb0d6', '#c8b6ff'],
+    blocks: ['#b8f0ff', '#ffd878', '#c8b8f8', '#8ff6b6', '#f070a0', '#6ba9ff', '#ffae5a', '#e6e6ff', '#a6f0ff', '#f0b0d0', '#c8b6ff'],
     particles: '#b388ff',
     glow: '#7afcff',
     bgA: '#0a0612',
